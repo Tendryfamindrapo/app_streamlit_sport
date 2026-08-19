@@ -52,6 +52,10 @@ def save_transaction(u,n,cat,day,amount,kind):
  if redis_ready():
   rows=json.loads(cache.get(f"nexabudget:transactions:{u}") or "[]");rows.append({"id":max([x["id"]for x in rows],default=0)+1,"user_id":u,"name":n,"category":cat,"date":day,"amount":amount,"type":kind});cache.set(f"nexabudget:transactions:{u}",json.dumps(rows));return
  with db()as c:c.execute("INSERT INTO transactions(user_id,name,category,date,amount,type) VALUES(?,?,?,?,?,?)",(u,n,cat,day,amount,kind))
+def current_balance(u):
+ data=tx(u)
+ if data.empty:return 0.0
+ return float(data.loc[data.type=="income","amount"].sum()-data.loc[data.type=="expense","amount"].sum())
 def save_budget(u,n,limit):
  if redis_ready():
   rows=json.loads(cache.get(f"nexabudget:budgets:{u}") or "[]");rows.append({"id":max([x["id"]for x in rows],default=0)+1,"user_id":u,"name":n,"limit_amount":limit});cache.set(f"nexabudget:budgets:{u}",json.dumps(rows));return
@@ -61,16 +65,18 @@ def find_user(email):
   uid=cache.get(f"nexabudget:user_email:{email}")
   return cache.hgetall(f"nexabudget:user:{uid}") if uid else None
  with db()as c:return c.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
-def register_user(name,email,password):
+def register_user(name,email,password,initial_budget):
  email=email.lower().strip()
  if find_user(email):return None,"Cette adresse e-mail est déjà utilisée."
  if redis_ready():
   uid=cache.incr("nexabudget:user_seq")
   cache.hset(f"nexabudget:user:{uid}",mapping={"id":uid,"name":name,"email":email,"password_hash":generate_password_hash(password)})
   cache.set(f"nexabudget:user_email:{email}",uid);cache.set(f"nexabudget:transactions:{uid}","[]");cache.set(f"nexabudget:budgets:{uid}","[]")
+  if initial_budget>0:save_transaction(uid,"Budget initial","Autre",date.today().isoformat(),initial_budget,"income")
   return uid,None
  try:
   with db()as c:uid=c.execute("INSERT INTO users(name,email,password_hash) VALUES(?,?,?)",(name,email,generate_password_hash(password))).lastrowid
+  if initial_budget>0:save_transaction(uid,"Budget initial","Autre",date.today().isoformat(),initial_budget,"income")
   return uid,None
  except sqlite3.IntegrityError:return None,"Cette adresse e-mail est déjà utilisée."
 def add(u):
@@ -80,8 +86,13 @@ def add(u):
    if st.form_submit_button("Enregistrer",type="primary",use_container_width=True):
     if not n.strip():st.warning("Ajoutez un libellé.")
     else:
-     save_transaction(u,n.strip(),cat,day.isoformat(),amount,"income"if kind=="Revenu"else"expense")
-     st.rerun()
+     transaction_type="income"if kind=="Revenu"else"expense"
+     balance=current_balance(u)
+     if transaction_type=="expense" and amount>balance:
+      st.error(f"Solde insuffisant : vous avez {euro(balance)}. Cette dépense de {euro(amount)} ferait passer votre compte dans le négatif.")
+     else:
+      save_transaction(u,n.strip(),cat,day.isoformat(),amount,transaction_type)
+      st.rerun()
 def show(data):
  if data.empty:st.info("Aucune transaction.");return
  x=data.copy();x["Catégorie"]=x.category.map(lambda n:f"{CATS.get(n,'◇')} {n}");x["Type"]=x.type.map({"income":"Revenu","expense":"Dépense"});x["Montant"]=x.apply(lambda r:("+ "if r.type=="income"else"− ")+euro(r.amount),axis=1);x=x.rename(columns={"name":"Transaction","date":"Date"});st.dataframe(x[["Transaction","Catégorie","Date","Type","Montant"]],hide_index=True,use_container_width=True)
@@ -143,7 +154,7 @@ def login():
   with signup:
    st.write("Créez votre espace NexaBudget gratuitement.")
    with st.form("signup",clear_on_submit=True):
-    name=st.text_input("Nom complet");email=st.text_input("Adresse e-mail",key="signup_email");password=st.text_input("Mot de passe",type="password",key="signup_password");confirm=st.text_input("Confirmer le mot de passe",type="password")
+    name=st.text_input("Nom complet");email=st.text_input("Adresse e-mail",key="signup_email");initial_budget=st.number_input("Budget initial disponible (€)",min_value=0.0,value=0.0,step=10.0,help="Ce montant devient votre solde de départ. Les dépenses ne pourront pas le dépasser.");password=st.text_input("Mot de passe",type="password",key="signup_password");confirm=st.text_input("Confirmer le mot de passe",type="password")
     create=st.form_submit_button("Créer mon compte",type="primary",use_container_width=True)
    if create:
     if not name.strip() or not email.strip() or not password:st.warning("Tous les champs sont obligatoires.")
@@ -151,7 +162,7 @@ def login():
     elif len(password)<8:st.warning("Le mot de passe doit contenir au moins 8 caractères.")
     elif password!=confirm:st.warning("Les mots de passe ne correspondent pas.")
     else:
-     uid,error=register_user(name.strip(),email,password)
+     uid,error=register_user(name.strip(),email,password,initial_budget)
      if error:st.error(error)
      else:st.session_state.uid=int(uid);st.session_state.name=name.strip();st.success("Compte créé avec succès !");st.rerun()
 def styles(dark):
