@@ -28,6 +28,7 @@ def setup():
  if redis_ready():
   if cache.exists("nexabudget:user:1"):return
   cache.hset("nexabudget:user:1",mapping={"id":"1","name":"Alex Martin","email":"alex@nexabudget.fr","password_hash":generate_password_hash("budget2026")})
+  cache.set("nexabudget:user_email:alex@nexabudget.fr","1");cache.set("nexabudget:user_seq","1")
   x=[{"id":i+1,"user_id":1,"name":r[0],"category":r[1],"date":r[2],"amount":r[3],"type":r[4]}for i,r in enumerate([("Salaire — Nexa Studio","Salaire","2026-08-01",2800,"income"),("Loyer appartement","Logement","2026-08-03",850,"expense"),("Carrefour Market","Alimentation","2026-08-17",76.4,"expense"),("Netflix","Loisirs","2026-08-16",15.99,"expense"),("Station TotalEnergies","Transport","2026-08-15",58.2,"expense"),("Restaurant Le Petit Bistro","Loisirs","2026-08-13",38.5,"expense"),("Pharmacie Centrale","Santé","2026-08-11",22.9,"expense"),("Remboursement Emma","Autre","2026-08-08",45,"income")])]
   b=[{"id":i+1,"user_id":1,"name":n,"limit_amount":v}for i,(n,v)in enumerate([("Alimentation",350),("Transport",160),("Loisirs",180),("Logement",900),("Santé",100)])]
   cache.set("nexabudget:transactions:1",json.dumps(x));cache.set("nexabudget:budgets:1",json.dumps(b));return
@@ -57,9 +58,21 @@ def save_budget(u,n,limit):
  with db()as c:c.execute("INSERT INTO budgets(user_id,name,limit_amount) VALUES(?,?,?)",(u,n,limit))
 def find_user(email):
  if redis_ready():
-  user=cache.hgetall("nexabudget:user:1")
-  return user if user and user["email"]==email else None
+  uid=cache.get(f"nexabudget:user_email:{email}")
+  return cache.hgetall(f"nexabudget:user:{uid}") if uid else None
  with db()as c:return c.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
+def register_user(name,email,password):
+ email=email.lower().strip()
+ if find_user(email):return None,"Cette adresse e-mail est déjà utilisée."
+ if redis_ready():
+  uid=cache.incr("nexabudget:user_seq")
+  cache.hset(f"nexabudget:user:{uid}",mapping={"id":uid,"name":name,"email":email,"password_hash":generate_password_hash(password)})
+  cache.set(f"nexabudget:user_email:{email}",uid);cache.set(f"nexabudget:transactions:{uid}","[]");cache.set(f"nexabudget:budgets:{uid}","[]")
+  return uid,None
+ try:
+  with db()as c:uid=c.execute("INSERT INTO users(name,email,password_hash) VALUES(?,?,?)",(name,email,generate_password_hash(password))).lastrowid
+  return uid,None
+ except sqlite3.IntegrityError:return None,"Cette adresse e-mail est déjà utilisée."
 def add(u):
  with st.expander("＋ Ajouter une transaction"):
   with st.form("new",clear_on_submit=True):
@@ -111,13 +124,29 @@ def login():
  _,m,_=st.columns([1,1.3,1])
  with m:
   st.title("💳 NexaBudget");st.caption("VOTRE ARGENT, EN CLAIR");st.subheader("Content de vous revoir !")
-  with st.form("login"):
-   mail=st.text_input("Adresse e-mail",value="alex@nexabudget.fr");pw=st.text_input("Mot de passe",value="budget2026",type="password");ok=st.form_submit_button("Se connecter",type="primary",use_container_width=True)
-  if ok:
-   r=find_user(mail.lower().strip())
-   if r and check_password_hash(r["password_hash"],pw):st.session_state.uid=int(r["id"]);st.session_state.name=r["name"];st.rerun()
-   st.error("Adresse e-mail ou mot de passe incorrect.")
-  st.info("Démo : alex@nexabudget.fr / budget2026")
+  signin,signup=st.tabs(["Connexion","Créer un compte"])
+  with signin:
+   with st.form("login"):
+    mail=st.text_input("Adresse e-mail",value="alex@nexabudget.fr");pw=st.text_input("Mot de passe",value="budget2026",type="password");ok=st.form_submit_button("Se connecter",type="primary",use_container_width=True)
+   if ok:
+    r=find_user(mail.lower().strip())
+    if r and check_password_hash(r["password_hash"],pw):st.session_state.uid=int(r["id"]);st.session_state.name=r["name"];st.rerun()
+    st.error("Adresse e-mail ou mot de passe incorrect.")
+   st.info("Démo : alex@nexabudget.fr / budget2026")
+  with signup:
+   st.write("Créez votre espace NexaBudget gratuitement.")
+   with st.form("signup",clear_on_submit=True):
+    name=st.text_input("Nom complet");email=st.text_input("Adresse e-mail",key="signup_email");password=st.text_input("Mot de passe",type="password",key="signup_password");confirm=st.text_input("Confirmer le mot de passe",type="password")
+    create=st.form_submit_button("Créer mon compte",type="primary",use_container_width=True)
+   if create:
+    if not name.strip() or not email.strip() or not password:st.warning("Tous les champs sont obligatoires.")
+    elif "@" not in email:st.warning("Saisissez une adresse e-mail valide.")
+    elif len(password)<8:st.warning("Le mot de passe doit contenir au moins 8 caractères.")
+    elif password!=confirm:st.warning("Les mots de passe ne correspondent pas.")
+    else:
+     uid,error=register_user(name.strip(),email,password)
+     if error:st.error(error)
+     else:st.session_state.uid=int(uid);st.session_state.name=name.strip();st.success("Compte créé avec succès !");st.rerun()
 def styles(dark):
  bg,card,text,muted,border=("#171526","#24213c","#f5f3ff","#bcb7d0","#393651") if dark else ("#f7f6fb","#ffffff","#24213c","#756f87","#e6e4ee")
  st.markdown(f"""<style>:root{{--bg:{bg};--card:{card};--text:{text};--muted:{muted};--border:{border};}}.stApp,[data-testid='stAppViewContainer'],[data-testid='stMain']{{background:var(--bg)!important;color:var(--text)!important}}[data-testid='stSidebar']{{background:#28204a!important}}[data-testid='stSidebar'] *{{color:#fff!important}}h1,h2,h3,p,label,[data-testid='stMarkdownContainer'],[data-testid='stCaptionContainer']{{color:var(--text)!important}}[data-testid='stCaptionContainer']{{color:var(--muted)!important}}div[data-testid='stMetric'],[data-testid='stDataFrame'],[data-testid='stExpander']{{background:var(--card)!important;border:1px solid var(--border)!important;border-radius:12px;padding:15px}}input,select,[data-baseweb='select']>div{{background:var(--card)!important;color:var(--text)!important}} </style>""",unsafe_allow_html=True)
