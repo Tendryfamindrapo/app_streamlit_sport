@@ -90,7 +90,14 @@ def home(u):
  st.title(f"Bonjour, {st.session_state.name} 👋");st.caption("Voici le résumé de vos finances aujourd’hui.");add(u);a,b,c,d=st.columns(4);a.metric("Solde total",euro(bal),"+8,2 %");b.metric("Revenus",euro(i),"+4,6 %");c.metric("Dépenses",euro(e),"−12,1 %",delta_color="inverse");d.metric("Épargne",euro(max(0,bal)),"Objectif : 2 000 €")
  st.divider();a,b=st.columns([1.65,1])
  with a:
-  st.subheader("Flux de trésorerie");p=data.copy();p.date=pd.to_datetime(p.date);st.line_chart(p.pivot_table(index="date",columns="type",values="amount",aggfunc="sum",fill_value=0).rename(columns={"income":"Revenus","expense":"Dépenses"}),color=["#7467ed","#f17a71"])
+  st.subheader("Flux de trésorerie")
+  if data.empty:
+   st.info("Ajoutez des transactions pour afficher le flux de trésorerie.")
+  else:
+   p=data.copy();p.date=pd.to_datetime(p.date)
+   chart_data=p.pivot_table(index="date",columns="type",values="amount",aggfunc="sum",fill_value=0).rename(columns={"income":"Revenus","expense":"Dépenses"})
+   # Une couleur par série : le graphique reste valide avec 1 seul type de mouvement.
+   st.line_chart(chart_data,color=["#7467ed","#f17a71"][:len(chart_data.columns)])
  with b:
   st.subheader("Vos budgets")
   for z in bd(u):
